@@ -353,8 +353,6 @@ export default Kapsule({
               .text(line);
           });
         });
-      }
-    });
 
     //
 
