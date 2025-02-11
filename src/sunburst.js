@@ -55,7 +55,8 @@ export default Kapsule({
     onClick: { triggerUpdate: false },
     onRightClick: { triggerUpdate: false },
     onHover: { triggerUpdate: false },
-    transitionDuration: { default: 750, triggerUpdate: false }
+    transitionDuration: { default: 750, triggerUpdate: false },
+    multilineLabels: { default: false, triggerUpdate: true }, // Enable update triggering
   },
 
   methods: {
@@ -285,24 +286,26 @@ export default Kapsule({
 
     // Label processing
     const getLabelMeta = d => {
-      if (!state.showLabels) return { label: '', fits: false };
+      if (!state.showLabels) return { label: '', fits: false, lines: [] };
 
       const isRadial = (state.labelOrientation === 'auto'
         ? autoPickLabelOrientation(d)
         : state.labelOrientation) !== 'angular';
 
       let label = nameOf(d.data);
-      let fits = isRadial ? radialTextFits(d) : angularTextFits(d);
+      const lines = state.multilineLabels ? String(label).split('\n') : [String(label)];
+      let fits = isRadial ? radialTextFits(d, lines) : angularTextFits(d, lines);
 
       if (!fits && state.handleNonFittingLabel) {
         const availableSpace = isRadial ? getAvailableLabelRadialSpace(d) : getAvailableLabelAngularSpace(d);
-        const newLabel = state.handleNonFittingLabel(label, availableSpace, d);
+        const newLabel = state.handleNonFittingLabel(label, availableSpace, d, lines);
         if (newLabel) {
           label = newLabel;
-          fits = true;
+          lines = state.multilineLabels ? label.split('\n') : [label];
+          fits = isRadial ? radialTextFits(d, lines) : angularTextFits(d, lines);
         }
       }
-      return { isRadial, label, fits };
+      return { isRadial, label, lines, fits };
     };
     const labelMetaCache = new Map();
 
@@ -328,10 +331,30 @@ export default Kapsule({
       .transition(transition)
         .textTween(d => () => labelMetaCache.get(d).label);
 
-    computeRadialLabels && allSlices.selectAll('g.radial-label').selectAll('text')
-      .transition(transition)
-        .textTween(d => () => labelMetaCache.get(d).label)
-        .attrTween('transform', d => () => radialTextTransform(d));
+    computeRadialLabels && allSlices.selectAll('g.radial-label').each(function(d) {
+          const { lines } = labelMetaCache.get(d);
+          const contour = d3Select(this).select('.text-contour');
+          const stroke = d3Select(this).select('.text-stroke');
+    
+          // Clear existing content
+          contour.selectAll('*').remove();
+          stroke.selectAll('*').remove();
+    
+          // Add line positioning
+          lines.forEach((line, i) => {
+            contour.append('tspan')
+              .attr('x', 0)
+              .attr('dy', i === 0 ? 0 : '1.2em')
+              .text(line);
+              
+            stroke.append('tspan')
+              .attr('x', 0)
+              .attr('dy', i === 0 ? 0 : '1.2em')
+              .text(line);
+          });
+        });
+      }
+    });
 
     //
 
@@ -374,15 +397,27 @@ export default Kapsule({
       return state.radiusScale(d.y1) - state.radiusScale(d.y0);
     }
 
-    function angularTextFits(d) {
-      return measureTextWidth(nameOf(d.data).toString(), TEXT_FONTSIZE, { strokeWidth: TEXT_STROKE_WIDTH }) < getAvailableLabelAngularSpace(d);
+    function angularTextFits(d, lines) {
+      const available = getAvailableLabelAngularSpace(d);
+      const maxLineWidth = Math.max(...lines.map(line =>
+              measureTextWidth(line, TEXT_FONTSIZE, { strokeWidth: TEXT_STROKE_WIDTH })
+            ));
+      return maxLineWidth <= available;
     }
 
-    function radialTextFits(d) {
-      const availableHeight = state.radiusScale(d.y0) * (state.angleScale(d.x1) - state.angleScale(d.x0));
-      if (availableHeight < TEXT_FONTSIZE + TEXT_STROKE_WIDTH) return false; // not enough angular space
+    function radialTextFits(d, lines) {
+      const lineHeight = TEXT_FONTSIZE + TEXT_STROKE_WIDTH;
+      const averageRadius = (state.radiusScale(d.y0) + state.radiusScale(d.y1)) / 2;
+      const deltaAngle = state.angleScale(d.x1) - state.angleScale(d.x0);
+      const availableArcHeight = averageRadius * deltaAngle;
+      const totalTextHeight = lines.length * lineHeight;
+      if (totalTextHeight > availableArcHeight) return false;
 
-      return measureTextWidth(nameOf(d.data).toString(), TEXT_FONTSIZE, { strokeWidth: TEXT_STROKE_WIDTH }) < getAvailableLabelRadialSpace(d);
+      const availableRadialWidth = getAvailableLabelRadialSpace(d);
+      const maxLineWidth = Math.max(...lines.map(line => 
+         measureTextWidth(line, TEXT_FONTSIZE, { strokeWidth: TEXT_STROKE_WIDTH })
+       ));
+      return maxLineWidth <= availableRadialWidth;
     }
 
     function autoPickLabelOrientation(d) {
